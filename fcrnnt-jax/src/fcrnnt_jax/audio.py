@@ -8,11 +8,86 @@ should be used when isolating model parity.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import wave
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 Array = jax.Array
+
+
+@dataclass(frozen=True)
+class LoadedAudio:
+    """A validated, single-utterance PCM waveform ready for the frontend."""
+
+    samples: np.ndarray
+    sample_lengths: np.ndarray
+    sample_rate: int
+    channels: int
+    sample_width_bytes: int
+    frame_count: int
+    duration_seconds: float
+
+
+def load_pcm16_wav(
+    path: str | Path,
+    *,
+    expected_sample_rate: int = 16_000,
+) -> LoadedAudio:
+    """Load one mono PCM16 WAV without silently resampling or downmixing."""
+
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"audio file not found: {resolved}")
+    if expected_sample_rate <= 0:
+        raise ValueError("expected_sample_rate must be positive")
+
+    try:
+        with wave.open(str(resolved), "rb") as stream:
+            channels = stream.getnchannels()
+            sample_width = stream.getsampwidth()
+            sample_rate = stream.getframerate()
+            frame_count = stream.getnframes()
+            compression = stream.getcomptype()
+            raw_samples = stream.readframes(frame_count)
+    except (EOFError, wave.Error) as exc:
+        raise ValueError(f"invalid WAV file: {resolved}") from exc
+
+    if compression != "NONE":
+        raise ValueError(f"WAV must be uncompressed PCM, got {compression}")
+    if channels != 1:
+        raise ValueError(f"WAV must be mono, got {channels} channels")
+    if sample_width != 2:
+        raise ValueError(
+            f"WAV must use signed 16-bit PCM, got {sample_width * 8}-bit samples"
+        )
+    if sample_rate != expected_sample_rate:
+        raise ValueError(
+            f"WAV sample rate must be {expected_sample_rate} Hz, got {sample_rate} Hz"
+        )
+    if frame_count <= 0:
+        raise ValueError("WAV must contain at least one audio frame")
+
+    pcm = np.frombuffer(raw_samples, dtype="<i2")
+    expected_values = frame_count * channels
+    if pcm.size != expected_values:
+        raise ValueError(
+            f"truncated WAV data: expected {expected_values} samples, got {pcm.size}"
+        )
+    samples = (pcm.astype(np.float32) / 32768.0)[None, :]
+    if not np.isfinite(samples).all():
+        raise ValueError("decoded waveform contains non-finite samples")
+    return LoadedAudio(
+        samples=samples,
+        sample_lengths=np.asarray([frame_count], dtype=np.int32),
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_width_bytes=sample_width,
+        frame_count=frame_count,
+        duration_seconds=frame_count / sample_rate,
+    )
 
 
 @dataclass(frozen=True)
@@ -148,4 +223,3 @@ def log_mel_spectrogram(
         features = (features - mean) * jax.lax.rsqrt(variance + 1e-5)
     features = jnp.where(mask[..., None], features, 0.0)
     return features, lengths
-

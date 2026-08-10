@@ -46,6 +46,30 @@ python -m fcrnnt_jax.cli checkpoint-smoke --directory ./artifacts/checkpoint-smo
 
 On a CPU workstation, `devices` is only a local installation smoke; the TPU pass requires backend `tpu`, exactly one device, and the BF16 device computation documented in [deploy.md](deploy.md).
 
+## Real-audio frontend smoke
+
+NVIDIA's Parakeet RNNT 1.1B model card uses LibriSpeech utterance
+`2086-149220-0033` as its example. Download the same small WAV and verify its
+identity before running it through the JAX frontend:
+
+```bash
+curl -fL --retry 3 \
+  -o fixtures/audio/2086-149220-0033.wav \
+  https://dldata-public.s3.us-east-2.amazonaws.com/2086-149220-0033.wav
+
+python -m fcrnnt_jax.cli audio-smoke \
+  --audio fixtures/audio/2086-149220-0033.wav \
+  --reference-transcript-file fixtures/audio/2086-149220-0033.txt \
+  --expected-audio-sha256 5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150 \
+  --output artifacts/parakeet-audio-frontend.npz
+```
+
+A pass proves checksum-verified PCM16 mono/16-kHz ingestion and finite 80-bin
+log-mel extraction on the selected JAX backend. The expected feature shape is
+`[1, 742, 80]`. The transcript is ground truth, not model output: this command
+does not claim transcription or WER parity. Those require converted pretrained
+weights, the matching tokenizer, and an RNN-T decoder.
+
 ## What is implemented
 
 - classic RNN-T forward/backward dynamic programming with explicit lengths and blank semantics;
@@ -53,6 +77,7 @@ On a CPU workstation, `devices` is only a local installation smoke; the TPU pass
 - a complete JIT-able training step and finite-gradient checks;
 - Orbax save/restore of the full training PyTree;
 - fail-closed tensor conversion rules and conversion reports;
+- strict real-WAV loading and a checksum-aware JAX audio-frontend smoke;
 - synthetic smokes and an external loss-fixture path for NeMo parity evidence.
 
 ## What remains a compatibility gate
@@ -72,6 +97,7 @@ The `parakeet-1.1b` preset is therefore a **shape and fitment target**, not a de
 python -m fcrnnt_jax.cli devices
 python -m fcrnnt_jax.cli loss-smoke [--fixture fixture.npz]
 python -m fcrnnt_jax.cli model-smoke [--preset tiny|parakeet-1.1b]
+python -m fcrnnt_jax.cli audio-smoke --audio FILE.wav --reference-transcript-file FILE.txt [--output evidence.npz]
 python -m fcrnnt_jax.cli train-smoke [--steps N] [--workdir PATH]
 python -m fcrnnt_jax.cli benchmark [--preset tiny|parakeet-1.1b] [--steps N] [--warmup N]
 python -m fcrnnt_jax.cli checkpoint-smoke [--directory PATH]
@@ -97,11 +123,12 @@ Every command emits a final machine-readable JSON object. Retain that output tog
 - the selected JAX/libtpu environment sees one v6e device;
 - RNN-T loss values and gradients pass the selected reference fixture;
 - tiny and 1.1B-shaped model graphs compile and produce finite outputs;
+- a pinned real speech WAV decodes and produces finite JAX frontend features;
 - the tiny end-to-end training loop updates parameters and reduces loss;
 - the representative full training step fits and runs, or records a reproducible OOM boundary;
 - full training state can be checkpointed, restored, and resumed equivalently.
 
-It still does not prove pretrained Parakeet checkpoint parity or unchanged WER. Those remain explicit gates below.
+It still does not prove pretrained Parakeet checkpoint parity or unchanged WER. Those remain explicit gates for the subsequent compatibility phase.
 
 ## Design boundary
 

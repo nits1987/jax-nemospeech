@@ -144,8 +144,8 @@ gcloud compute ssh "${TPU_NAME}" \
 Then, on the TPU VM:
 
 ```bash
-export REPO_URL="YOUR_REPOSITORY_URL"
-export REPO_REF="YOUR_BRANCH_TAG_OR_COMMIT"
+export REPO_URL="https://github.com/nits1987/jax-nemospeech"
+export REPO_REF="main"
 
 git clone "${REPO_URL}" "${HOME}/fcrnnt-jax"
 cd "${HOME}/fcrnnt-jax"
@@ -251,7 +251,7 @@ python -m pip freeze | tee "${POC_LOG_DIR}/01-requirements.txt"
 python -m fcrnnt_jax.cli --help | tee "${POC_LOG_DIR}/02-cli-help.txt"
 ```
 
-The managed accelerator image supplies the host TPU software, but JAX and its matching `jaxlib`/`libtpu` packages still belong in the virtual environment. The explicit Python and JAX gates prevent pip on Ubuntu's older default Python from silently selecting an older JAX release. Do not upgrade `libtpu` separately from the pinned JAX TPU extra. If organizational policy disallows the Python PPA, stop and use an approved Python 3.12 interpreter or a separately qualified, digest-pinned Google JAX AI container; do not fall back silently. `pip check` must pass, and CLI help must list exactly these PoC commands: `devices`, `loss-smoke`, `model-smoke`, `train-smoke`, `benchmark`, and `checkpoint-smoke`.
+The managed accelerator image supplies the host TPU software, but JAX and its matching `jaxlib`/`libtpu` packages still belong in the virtual environment. The explicit Python and JAX gates prevent pip on Ubuntu's older default Python from silently selecting an older JAX release. Do not upgrade `libtpu` separately from the pinned JAX TPU extra. If organizational policy disallows the Python PPA, stop and use an approved Python 3.12 interpreter or a separately qualified, digest-pinned Google JAX AI container; do not fall back silently. `pip check` must pass, and CLI help must list exactly these PoC commands: `devices`, `loss-smoke`, `model-smoke`, `audio-smoke`, `train-smoke`, `benchmark`, and `checkpoint-smoke`.
 
 If the repository later includes a tested TPU requirements lock, use it in a fresh per-run environment instead of the preceding unpinned install. The lock must preserve a TPU-enabled JAX/libtpu combination; a CPU-only JAX lock is not valid:
 
@@ -347,7 +347,7 @@ Gate: the version report identifies accelerator type `v6e` and a compatible libt
 Each command has a deterministic zero-argument smoke. The commands below also use the supported flags to distinguish the cheap tiny checks from the full `parakeet-1.1b` fitment checks. Before running them, inspect their arguments and preserve the help output; this prevents an operator from applying flags from another revision.
 
 ```bash
-for command in loss-smoke model-smoke train-smoke benchmark checkpoint-smoke; do
+for command in loss-smoke model-smoke audio-smoke train-smoke benchmark checkpoint-smoke; do
   python -m fcrnnt_jax.cli "${command}" --help \
     > "${POC_LOG_DIR}/help-${command}.txt"
 done
@@ -404,7 +404,40 @@ python -m fcrnnt_jax.cli train-smoke \
 
 Gate: `encoder -> predictor -> joint -> RNN-T loss -> backward -> optimizer` completes, gradients and updates are finite, and the deterministic tiny batch loss decreases by the command's declared threshold. A model-forward-only run does not pass this gate.
 
-### 7.4 Full-step benchmark
+### 7.4 Real speech WAV -> JAX frontend
+
+Download the small 7.435-second utterance used by NVIDIA's Parakeet RNNT 1.1B
+model card, verify its pinned checksum, and run the real waveform through the
+frontend on TPU:
+
+```bash
+curl -fL --retry 3 \
+  -o fixtures/audio/2086-149220-0033.wav \
+  https://dldata-public.s3.us-east-2.amazonaws.com/2086-149220-0033.wav
+
+echo '5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150  fixtures/audio/2086-149220-0033.wav' \
+  | sha256sum -c -
+
+python -m fcrnnt_jax.cli audio-smoke \
+  --audio fixtures/audio/2086-149220-0033.wav \
+  --reference-transcript-file fixtures/audio/2086-149220-0033.txt \
+  --expected-audio-sha256 5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150 \
+  --output "${POC_ARTIFACT_DIR}/parakeet-audio-frontend.npz" 2>&1 \
+  | tee "${POC_LOG_DIR}/08a-audio-smoke.log"
+```
+
+Gate: status is `pass`, backend is `tpu`, the audio is PCM16 mono at 16 kHz,
+the reference has 23 words, and the finite feature shape is `[1, 742, 80]`.
+This proves real-audio ingestion and JAX frontend execution only. The reference
+text is operator-supplied ground truth; no model hypothesis or WER is produced
+until converted Parakeet weights, its tokenizer, and an RNN-T decoder exist.
+
+For your own audio, replace both file paths and omit
+`--expected-audio-sha256` unless you have pinned your file's checksum. The
+current loader intentionally rejects stereo, non-16-kHz, compressed, or
+non-PCM16 WAVs instead of silently changing the signal.
+
+### 7.5 Full-step benchmark
 
 ```bash
 python -m fcrnnt_jax.cli benchmark \
@@ -416,7 +449,7 @@ python -m fcrnnt_jax.cli benchmark \
 
 Gate: the command reports compilation separately from steady state and benchmarks complete Parakeet 1.1B training steps, including loss, backward, and optimizer update. Preserve step count, batch/audio/text shapes, dtype, median or mean step time, throughput, and peak memory when available. Do not use first-call latency as steady-state performance. If the full preset OOMs, preserve that result; do not substitute a tiny benchmark and report it as the 1.1B fit gate.
 
-### 7.5 Checkpoint/save/restore/resume
+### 7.6 Checkpoint/save/restore/resume
 
 ```bash
 python -m fcrnnt_jax.cli checkpoint-smoke \
@@ -437,6 +470,7 @@ Record a compact operator result after all gates pass:
   echo "loss_smoke=PASS"
   echo "model_smoke=PASS"
   echo "train_smoke=PASS"
+  echo "audio_frontend_smoke=PASS"
   echo "benchmark=PASS"
   echo "checkpoint_smoke=PASS"
 } | tee "${POC_ARTIFACT_DIR}/operator-verdict.txt"
@@ -590,6 +624,7 @@ The final check must be empty. If `deletionProtection` is true, stop and have th
 - [ ] `loss-smoke` passed its fixed value-and-gradient fixture.
 - [ ] `model-smoke` passed full forward compilation and finiteness.
 - [ ] `train-smoke` passed the end-to-end overfit/update gate.
+- [ ] `audio-smoke` verified the pinned real WAV and finite TPU frontend features.
 - [ ] `benchmark` measured post-compile full training steps.
 - [ ] `checkpoint-smoke` proved save/restore/next-step equivalence.
 - [ ] Archive copied off the VM and inspected.
@@ -608,3 +643,5 @@ The final check must be empty. If `deletionProtection` is true, stop and have th
 - [`tpu-info` installation and metrics](https://docs.cloud.google.com/tpu/docs/tpu-info-cli)
 - [JAX persistent compilation cache](https://docs.jax.dev/en/latest/persistent_compilation_cache.html)
 - [`gcloud compute scp`](https://docs.cloud.google.com/sdk/gcloud/reference/compute/scp)
+- [NVIDIA Parakeet RNNT 1.1B model card and example audio](https://huggingface.co/nvidia/parakeet-rnnt-1.1b)
+- [LibriSpeech corpus and license](https://www.openslr.org/12)

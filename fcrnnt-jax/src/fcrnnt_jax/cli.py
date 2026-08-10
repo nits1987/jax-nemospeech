@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
@@ -10,6 +11,7 @@ import json
 import math
 from pathlib import Path
 import platform
+import re
 import sys
 import time
 import traceback
@@ -19,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .audio import AudioConfig, load_pcm16_wav, log_mel_spectrogram
 from .checkpoint import restore_checkpoint, save_checkpoint, tree_fingerprint
 from .config import ParakeetConfig
 from .model import PARITY_GAPS, ParakeetRNNT
@@ -83,6 +86,19 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _reference_transcript(path: Path) -> tuple[str, str]:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"reference transcript not found: {resolved}")
+    text = " ".join(resolved.read_text(encoding="utf-8").split())
+    if not text:
+        raise ValueError("reference transcript must not be empty")
+    normalized = " ".join(re.findall(r"[a-z0-9']+", text.lower()))
+    if not normalized:
+        raise ValueError("reference transcript has no words after normalization")
+    return text, normalized
 
 
 def _logaddexp(a: float, b: float) -> float:
@@ -391,6 +407,105 @@ def command_model_smoke(args: argparse.Namespace) -> int:
     return 0 if finite else 1
 
 
+def command_audio_smoke(args: argparse.Namespace) -> int:
+    audio_path = args.audio.expanduser().resolve()
+    transcript_path = args.reference_transcript_file.expanduser().resolve()
+    audio_sha256 = _sha256(audio_path)
+    if args.expected_audio_sha256 is not None:
+        expected_sha256 = args.expected_audio_sha256.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("--expected-audio-sha256 must contain 64 hexadecimal characters")
+        if audio_sha256 != expected_sha256:
+            raise ValueError(
+                f"audio SHA-256 mismatch: expected {expected_sha256}, got {audio_sha256}"
+            )
+
+    loaded = load_pcm16_wav(audio_path)
+    reference, normalized_reference = _reference_transcript(transcript_path)
+    config = AudioConfig(sample_rate=loaded.sample_rate)
+    frontend = jax.jit(lambda samples, lengths: log_mel_spectrogram(samples, lengths, config))
+    started = time.perf_counter()
+    features, feature_lengths = frontend(
+        jnp.asarray(loaded.samples), jnp.asarray(loaded.sample_lengths)
+    )
+    jax.block_until_ready(features)
+    elapsed = time.perf_counter() - started
+    features_np = np.asarray(features)
+    feature_lengths_np = np.asarray(feature_lengths)
+    finite = bool(np.isfinite(features_np).all())
+    nonempty = bool(feature_lengths_np.size == 1 and feature_lengths_np[0] > 0)
+    expected_shape = (
+        1,
+        max(1, 1 + (loaded.frame_count - config.win_length) // config.hop_length),
+        config.n_mels,
+    )
+    passed = finite and nonempty and features_np.shape == expected_shape
+
+    artifact: dict[str, Any] | None = None
+    if args.output is not None:
+        output_path = args.output.expanduser().resolve()
+        if output_path.exists():
+            raise FileExistsError(f"refusing to replace existing audio artifact: {output_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            output_path,
+            samples=loaded.samples,
+            sample_lengths=loaded.sample_lengths,
+            features=features_np,
+            feature_lengths=feature_lengths_np,
+            audio_sha256=np.asarray(audio_sha256),
+            reference_transcript=np.asarray(reference),
+            normalized_reference_transcript=np.asarray(normalized_reference),
+            frontend_config_json=np.asarray(json.dumps(asdict(config), sort_keys=True)),
+        )
+        artifact = {
+            "path": str(output_path),
+            "sha256": _sha256(output_path),
+        }
+
+    report = _base_report("audio-smoke")
+    report.update(
+        {
+            "status": "pass" if passed else "fail",
+            "validation_scope": "audio-ingestion-and-jax-frontend-only",
+            "asr_decode_executed": False,
+            "asr_decode_blocker": (
+                "requires converted Parakeet checkpoint, matching tokenizer, and RNN-T decoder"
+            ),
+            "audio": {
+                "path": str(audio_path),
+                "sha256": audio_sha256,
+                "sample_rate_hz": loaded.sample_rate,
+                "channels": loaded.channels,
+                "sample_width_bits": loaded.sample_width_bytes * 8,
+                "sample_count": loaded.frame_count,
+                "duration_seconds": loaded.duration_seconds,
+                "peak_absolute_amplitude": float(np.max(np.abs(loaded.samples))),
+                "rms_amplitude": float(np.sqrt(np.mean(np.square(loaded.samples)))),
+            },
+            "reference": {
+                "path": str(transcript_path),
+                "sha256": _sha256(transcript_path),
+                "role": "operator-supplied-ground-truth-not-model-output",
+                "text": reference,
+                "normalized_text": normalized_reference,
+                "word_count": len(normalized_reference.split()),
+            },
+            "frontend": {
+                "config": asdict(config),
+                "feature_shape": list(features_np.shape),
+                "feature_lengths": feature_lengths_np,
+                "dtype": str(features_np.dtype),
+                "finite": finite,
+                "compile_and_execute_seconds": elapsed,
+            },
+            "artifact": artifact,
+        }
+    )
+    _print_report(report)
+    return 0 if passed else 1
+
+
 def _block_metrics(metrics: dict[str, jax.Array]) -> None:
     jax.block_until_ready(metrics["loss"])
 
@@ -666,6 +781,24 @@ def build_parser() -> argparse.ArgumentParser:
     model = subparsers.add_parser("model-smoke", help="compile and run model forward topology")
     model.add_argument("--preset", choices=("tiny", "parakeet-1.1b"), default="tiny")
     model.set_defaults(handler=command_model_smoke)
+
+    audio = subparsers.add_parser(
+        "audio-smoke",
+        help="validate PCM WAV ingestion and the JAX frontend (does not decode ASR)",
+    )
+    audio.add_argument("--audio", type=Path, required=True, help="mono 16-kHz PCM16 WAV")
+    audio.add_argument(
+        "--reference-transcript-file",
+        type=Path,
+        required=True,
+        help="UTF-8 ground-truth transcript; it is not treated as model output",
+    )
+    audio.add_argument(
+        "--expected-audio-sha256",
+        help="optional pinned SHA-256 that must match before audio is decoded",
+    )
+    audio.add_argument("--output", type=Path, help="optional frontend evidence .npz")
+    audio.set_defaults(handler=command_audio_smoke)
 
     train = subparsers.add_parser("train-smoke", help="overfit one deterministic tiny batch")
     train.add_argument("--steps", type=int, default=100)
