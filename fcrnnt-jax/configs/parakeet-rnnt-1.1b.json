@@ -1,0 +1,28 @@
+{
+  "compatibility_status": "shape-fitment-only-until-nemo-parity-gates-pass",
+  "model_id": "nvidia/parakeet-rnnt-1.1b",
+  "vocab_size": 1025,
+  "blank_id": 1024,
+  "pad_id": 0,
+  "joint_hidden_size": 640,
+  "joint_activation": "relu",
+  "max_symbols_per_step": 10,
+  "encoder": {
+    "num_mel_bins": 80,
+    "hidden_size": 1024,
+    "intermediate_size": 4096,
+    "num_hidden_layers": 42,
+    "num_attention_heads": 8,
+    "conv_kernel_size": 9,
+    "subsampling_factor": 8,
+    "subsampling_conv_channels": 256,
+    "max_position_embeddings": 5000,
+    "compute_dtype": "bfloat16",
+    "param_dtype": "float32"
+  },
+  "predictor": {
+    "hidden_size": 640,
+    "num_layers": 2
+  }
+}
+

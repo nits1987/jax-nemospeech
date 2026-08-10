@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: parakeet-cpt-${RUN_ID}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: parakeet-cpt
+    app.kubernetes.io/part-of: parakeet-cpt
+    cpt.run-id: ${RUN_ID}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: ${ACTIVE_DEADLINE_SECONDS}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: parakeet-cpt
+        app.kubernetes.io/part-of: parakeet-cpt
+        cpt.run-id: ${RUN_ID}
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 300
+      serviceAccountName: ${KSA}
+      nodeSelector:
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 2x2
+      containers:
+        - name: trainer
+          image: ${IMAGE}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JAX_PLATFORMS
+              value: tpu
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          command:
+            - python
+            - -m
+            - nemo_asr_jax.cli.train
+          args:
+            - --mode=${RUN_MODE}
+            - --run-id=${RUN_ID}
+            - --config=/app/configs/recipes/parakeet-rnnt-1.1b-cpt.yaml
+            - --base-model-uri=${BASE_MODEL_URI}
+            - --train-manifest-uri=gs://${BUCKET}/data/sample-2h/train.jsonl
+            - --eval-manifest-uri=gs://${BUCKET}/data/sample-2h/eval.jsonl
+            - --checkpoint-uri=gs://${BUCKET}/runs/${RUN_ID}/checkpoints
+            - --metrics-uri=gs://${BUCKET}/runs/${RUN_ID}/metrics
+            - --export-uri=gs://${BUCKET}/runs/${RUN_ID}/export
+            - --epochs=${EPOCHS}
+            - --max-steps=${MAX_STEPS}
+            - --save-interval-steps=${SAVE_INTERVAL_STEPS}
+            - --resume=auto
+          resources:
+            requests:
+              cpu: "32"
+              memory: 128Gi
+              google.com/tpu: "4"
+            limits:
+              google.com/tpu: "4"

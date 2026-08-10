@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gcs-wif-smoke
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: gcs-wif-smoke
+    app.kubernetes.io/part-of: parakeet-cpt
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gcs-wif-smoke
+        app.kubernetes.io/part-of: parakeet-cpt
+    spec:
+      restartPolicy: Never
+      serviceAccountName: ${KSA}
+      nodeSelector:
+        cloud.google.com/gke-nodepool: ${CPU_POOL}
+      containers:
+        - name: gcloud
+          image: gcr.io/google.com/cloudsdktool/google-cloud-cli:stable
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BUCKET
+              value: "${BUCKET}"
+          command:
+            - bash
+            - -lc
+          args:
+            - |
+              set -euo pipefail
+              date -u +%Y-%m-%dT%H:%M:%SZ | gcloud storage cp - "gs://${BUCKET}/smoke/wif.txt"
+              gcloud storage cat "gs://${BUCKET}/smoke/wif.txt"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

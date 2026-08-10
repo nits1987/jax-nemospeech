@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: parakeet-validate-${RUN_ID}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: parakeet-export-validation
+    app.kubernetes.io/part-of: parakeet-cpt
+    cpt.run-id: ${RUN_ID}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: parakeet-export-validation
+        app.kubernetes.io/part-of: parakeet-cpt
+        cpt.run-id: ${RUN_ID}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: ${KSA}
+      nodeSelector:
+        cloud.google.com/gke-nodepool: ${CPU_POOL}
+      containers:
+        - name: validator
+          image: ${SERVING_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - serving_validation.validate_parakeet_export
+          args:
+            - --model-uri=gs://${BUCKET}/runs/${RUN_ID}/export
+            - --audio-uri=gs://${BUCKET}/data/sample-2h/validation/fixed.wav
+            - --golden-output-uri=gs://${BUCKET}/data/sample-2h/validation/reference-output.json
+            - --result-uri=gs://${BUCKET}/runs/${RUN_ID}/export-validation/result.json
+          resources:
+            requests:
+              cpu: "2"
+              memory: 12Gi
+            limits:
+              cpu: "4"
+              memory: 14Gi

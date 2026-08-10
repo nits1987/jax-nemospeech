@@ -1,0 +1,17 @@
+{
+  "policy": "Freeze these values before inspecting JAX results; revise only with a written rationale.",
+  "rnnt_loss_fp32": {
+    "atol": 1e-5,
+    "rtol": 1e-5
+  },
+  "rnnt_logit_gradient": {
+    "cosine_similarity_minimum": 0.99999
+  },
+  "base_checkpoint_wer": {
+    "maximum_relative_regression": 0.01
+  },
+  "matched_short_training_wer": {
+    "maximum_relative_regression": 0.01
+  }
+}
+

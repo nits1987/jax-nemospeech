@@ -1,0 +1,35 @@
+{
+  "status": "template-not-evidence",
+  "model": {
+    "repository": "nvidia/parakeet-rnnt-1.1b",
+    "revision": "REPLACE_WITH_IMMUTABLE_REVISION",
+    "files": [
+      {
+        "path": "REPLACE_WITH_CHECKPOINT_PATH",
+        "sha256": "REPLACE_WITH_SHA256"
+      },
+      {
+        "path": "REPLACE_WITH_TOKENIZER_PATH",
+        "sha256": "REPLACE_WITH_SHA256"
+      }
+    ]
+  },
+  "reference_runtime": {
+    "nemo_version": "REPLACE",
+    "container_digest": "REPLACE",
+    "pytorch_version": "REPLACE",
+    "cuda_version": "REPLACE"
+  },
+  "decoder": {
+    "strategy": "REPLACE",
+    "max_symbols_per_step": 10,
+    "normalization": "REPLACE"
+  },
+  "datasets": [
+    {
+      "manifest": "REPLACE",
+      "sha256": "REPLACE"
+    }
+  ]
+}
+

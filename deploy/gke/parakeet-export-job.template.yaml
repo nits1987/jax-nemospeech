@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: parakeet-export-${RUN_ID}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: parakeet-export
+    app.kubernetes.io/part-of: parakeet-cpt
+    cpt.run-id: ${RUN_ID}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: parakeet-export
+        app.kubernetes.io/part-of: parakeet-cpt
+        cpt.run-id: ${RUN_ID}
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 300
+      serviceAccountName: ${KSA}
+      nodeSelector:
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 2x2
+      containers:
+        - name: exporter
+          image: ${IMAGE}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JAX_PLATFORMS
+              value: tpu
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          command:
+            - python
+            - -m
+            - nemo_asr_jax.cli.export
+          args:
+            - --config=/app/configs/recipes/parakeet-rnnt-1.1b-cpt.yaml
+            - --checkpoint-uri=gs://${BUCKET}/runs/${RUN_ID}/checkpoints
+            - --output-uri=gs://${BUCKET}/runs/${RUN_ID}/export
+            - --format=huggingface-safetensors
+            - --validate-fixed-audio=true
+            - --validation-audio-uri=gs://${BUCKET}/data/sample-2h/validation/fixed.wav
+            - --golden-output-uri=gs://${BUCKET}/data/sample-2h/validation/reference-output.json
+          resources:
+            requests:
+              cpu: "16"
+              memory: 64Gi
+              google.com/tpu: "4"
+            limits:
+              google.com/tpu: "4"

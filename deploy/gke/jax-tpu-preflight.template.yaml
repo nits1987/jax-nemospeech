@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jax-tpu-preflight
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: jax-tpu-preflight
+    app.kubernetes.io/part-of: parakeet-cpt
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jax-tpu-preflight
+        app.kubernetes.io/part-of: parakeet-cpt
+    spec:
+      restartPolicy: Never
+      serviceAccountName: ${KSA}
+      nodeSelector:
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 2x2
+      containers:
+        - name: jax
+          image: us-docker.pkg.dev/cloud-tpu-images/jax-ai-image/tpu:latest
+          imagePullPolicy: Always
+          command:
+            - bash
+            - -lc
+          args:
+            - |
+              set -euo pipefail
+              python - <<'PY'
+              import jax
+              import jax.numpy as jnp
+
+              devices = jax.devices()
+              print(f"jax_version={jax.__version__}")
+              print(f"default_backend={jax.default_backend()}")
+              print(f"device_count={jax.device_count()}")
+              print(f"local_device_count={jax.local_device_count()}")
+              for device in devices:
+                  print(device)
+
+              assert jax.default_backend() == "tpu", jax.default_backend()
+              assert len(devices) == 4, devices
+              assert all(device.platform == "tpu" for device in devices), devices
+
+              x = jnp.ones((2048, 2048), dtype=jnp.bfloat16)
+              y = jax.jit(lambda value: value @ value)(x)
+              y.block_until_ready()
+              assert y.shape == (2048, 2048)
+              print(f"matmul_ok shape={y.shape} dtype={y.dtype}")
+              PY
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+              google.com/tpu: "4"
+            limits:
+              google.com/tpu: "4"
