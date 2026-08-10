@@ -4,16 +4,39 @@
 
 This repository deliberately separates **runtime proof** from **model-compatibility proof**. The tiny synthetic path can establish that model, loss, gradients, optimizer, and checkpoints execute on XLA. It does not by itself prove that NVIDIA's public Parakeet checkpoint was converted exactly or that WER is unchanged. Those claims require pinned NeMo fixtures, complete tensor mapping, decoder parity, and matched WER evaluation.
 
-## Quick start
+## Start on the provisioned v6e
+
+The manual target is one Compute Engine TPU v6e chip:
+
+- machine type: `ct6e-standard-1t`;
+- OS image project: `ubuntu-os-accelerator-images`;
+- OS image family: `ubuntu-accel-2204-amd64-tpu-v5e-v5p-v6e`.
+
+The family name is shared across supported TPU generations; `ct6e-standard-1t` is what selects one v6e chip. This is a direct Compute Engine workflow, not a GKE deployment and not the legacy Cloud TPU API.
+
+If the instance is already running, clone a pinned revision directly on it:
+
+```bash
+git clone YOUR_REPOSITORY_URL "${HOME}/fcrnnt-jax"
+cd "${HOME}/fcrnnt-jax"
+git checkout YOUR_COMMIT_TAG_OR_BRANCH
+git rev-parse HEAD
+```
+
+If Git is unavailable, copy the complete `fcrnnt-jax` directory to `${HOME}/fcrnnt-jax`. Then follow [deploy.md](deploy.md): run the workstation preflight in Section 1, skip the source-transfer section when the code is already present, and execute the VM commands from Section 3 onward. The runbook pins the current TPU qualification environment, verifies the managed image and TPU backend, runs each correctness gate, preserves evidence, and provides guarded cleanup.
+
+## Local CPU quick start
+
+Python 3.12 is recommended so local validation uses the same Python generation as the pinned TPU lane:
 
 On a CPU workstation:
 
 ```bash
-python -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
-pytest -q
+python -m pytest -q
 python -m fcrnnt_jax.cli devices
 python -m fcrnnt_jax.cli loss-smoke
 python -m fcrnnt_jax.cli model-smoke
@@ -21,7 +44,7 @@ python -m fcrnnt_jax.cli train-smoke --steps 100 --workdir ./artifacts/train-smo
 python -m fcrnnt_jax.cli checkpoint-smoke --directory ./artifacts/checkpoint-smoke
 ```
 
-For the already provisioned Cloud TPU v6e-1, follow [deploy.md](deploy.md). It includes source transfer, TPU-specific JAX installation, gates in the required order, evidence collection, troubleshooting, and verified cleanup commands.
+On a CPU workstation, `devices` is only a local installation smoke; the TPU pass requires backend `tpu`, exactly one device, and the BF16 device computation documented in [deploy.md](deploy.md).
 
 ## What is implemented
 
@@ -55,6 +78,30 @@ python -m fcrnnt_jax.cli checkpoint-smoke [--directory PATH]
 ```
 
 Every command emits a final machine-readable JSON object. Retain that output together with `pip freeze`, device metadata, fixture hashes, and the code revision.
+
+## Repository map
+
+- `src/fcrnnt_jax/rnnt_loss.py`: materialized and streamed classic RNN-T losses;
+- `src/fcrnnt_jax/model.py`: FastConformer-style encoder, LSTM predictor, and joint network;
+- `src/fcrnnt_jax/training.py`: train state, optimizer, synthetic batches, and JIT training step;
+- `src/fcrnnt_jax/checkpoint.py`: Orbax save, restore, and resume support;
+- `src/fcrnnt_jax/conversion.py`: fail-closed checkpoint mapping primitives;
+- `src/fcrnnt_jax/audio.py`: audio/frontend utilities used by the PoC;
+- `tests/`: CPU correctness and integration tests;
+- `fixtures/`: format and instructions for external NeMo parity fixtures;
+- `configs/`: 1.1B shape target, parity tolerances, and source-lock template;
+- `deploy.md`: copy-and-run Compute Engine v6e qualification runbook.
+
+## A successful run proves
+
+- the selected JAX/libtpu environment sees one v6e device;
+- RNN-T loss values and gradients pass the selected reference fixture;
+- tiny and 1.1B-shaped model graphs compile and produce finite outputs;
+- the tiny end-to-end training loop updates parameters and reduces loss;
+- the representative full training step fits and runs, or records a reproducible OOM boundary;
+- full training state can be checkpointed, restored, and resumed equivalently.
+
+It still does not prove pretrained Parakeet checkpoint parity or unchanged WER. Those remain explicit gates below.
 
 ## Design boundary
 
